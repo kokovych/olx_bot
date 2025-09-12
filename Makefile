@@ -7,15 +7,15 @@ install:
 
 # Run linters and checks (flake8, black, isort, mypy)
 lint:
-	poetry run flake8 src tests
-	poetry run black --check src tests
-	poetry run isort --check-only src tests
+	poetry run flake8 src tests alembic
+	poetry run black --check src tests alembic
+	poetry run isort --check-only src tests alembic
 	poetry run mypy src tests
 
 # Automatically format code with black and isort
 format:
-	poetry run black src tests
-	poetry run isort src tests
+	poetry run black src tests alembic
+	poetry run isort src tests alembic
 
 # Run static type checking
 typecheck:

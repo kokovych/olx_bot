@@ -13,6 +13,8 @@ from aiogram.types import (
 )
 from dotenv import load_dotenv
 
+from db import add_telegram_user
+
 # Load environment variables from .env file
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
@@ -58,6 +60,7 @@ async def start_handler(message: types.Message) -> None:
         f"Username: @{user.username if user.username else '—'}\n\n"
         "Оберіть категорію для пошуку:"
     )
+    add_telegram_user(telegram_id=user.id, telegram_username=user.username or "")
     await message.answer(text, reply_markup=get_main_menu())
 
     # Send reply keyboard (always visible)
