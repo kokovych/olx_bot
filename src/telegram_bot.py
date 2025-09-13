@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from db import add_telegram_user
 from olx_api import get_city_info
+from utils import remove_duplicate_cities
 
 # --- Load environment variables from .env file ---
 load_dotenv()
@@ -115,15 +116,20 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
         await message.answer("❌ Місто не знайдено. Спробуйте ще раз.")
         return
 
+    city_data = data["data"]
+    # remove duplicates:
+    unique_cities = remove_duplicate_cities(city_data)
+
     # Take first 5 options HARD CODED
-    options = data["data"][:5]
+    options = unique_cities[:5]
 
     builder = InlineKeyboardBuilder()
     for item in options:
         city = item["city"]
         region = item["region"]["name"]
-        button_text = f"{city['name']} ({region})"
-        callback_data = f"choose_city:{city['id']}:{city['name']}"
+        region_id = item["region"]["id"]
+        button_text = f"{city['name']} ({region}, {region_id})"
+        callback_data = f"choose_city:{city['id']}:{city['name']}:{region_id}"
         builder.button(text=button_text, callback_data=callback_data)
 
     builder.adjust(1)  # 1 button per row
@@ -136,7 +142,7 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
     await state.clear()
 
     # Show found cities
-    cities = [f"🏙 {item["city"]['name']} (ID: {item["city"]['id']})" for item in data["data"]]
+    cities = [f"🏙 {item['city']['name']} (ID: {item['city']['id']})" for item in unique_cities]
     await message.answer("Знайдені міста:\n" + "\n".join(cities))
 
     await state.clear()  # Clear state for next steps
@@ -150,9 +156,12 @@ async def choose_city_handler(callback: types.CallbackQuery) -> None:
     parts = callback.data.split(":")
     city_id = parts[1]
     city_name = parts[2]
+    region_id = parts[3]
 
     if callback.message and isinstance(callback.message, types.Message):
-        await callback.message.edit_text(f"🏙 Ви обрали місто: <b>{city_name}</b> (ID: {city_id})")
+        await callback.message.edit_text(
+            f"🏙 Ви обрали місто: <b>{city_name}</b> (ID: {city_id}), (REGION ID: {region_id})"
+        )
     await callback.answer()
 
 
