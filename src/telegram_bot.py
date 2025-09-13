@@ -20,10 +20,9 @@ from db import add_telegram_user
 from olx_api import get_city_info
 from utils import remove_duplicate_cities
 
-# --- Load environment variables from .env file ---
+# --- Load environment variables ---
 load_dotenv()
 API_TOKEN = os.getenv("API_TOKEN")
-
 if not API_TOKEN:
     raise ValueError("No API token provided. Please set the API_TOKEN environment variable.")
 
@@ -36,59 +35,89 @@ bot = Bot(
 dp = Dispatcher()
 
 
-# --- States for FSM ---
+# --- FSM States ---
 class SearchStates(StatesGroup):
+    waiting_for_category_detail = State()
     waiting_for_city = State()
 
 
-# --- Persistent bottom menu (ReplyKeyboard) ---
+# --- Category IDs ---
+REAL_ESTATE_BUY_HOUSE = 1758
+REAL_ESTATE_BUY_APPARTMENT = 1602
+
+
+# --- Persistent menu (bottom keyboard) ---
 def get_persistent_menu() -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton(text="/start")]]
-    return ReplyKeyboardMarkup(
-        keyboard=keyboard,
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 
-# --- Inline main menu (for categories) ---
+# --- Inline main menu (categories) ---
 def get_main_menu() -> InlineKeyboardMarkup:
     keyboard = [[InlineKeyboardButton(text="🏠 Нерухомість", callback_data="category_real_estate")]]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
-# --- /start command handler ---
+# --- /start handler ---
 @dp.message(Command("start"))
 async def start_handler(message: types.Message) -> None:
-    if message.from_user is None:
+    user = message.from_user
+    if not user:
         await message.answer("Помилка: не вдалося отримати дані користувача.")
         return
 
-    user = message.from_user
+    # Save user in DB
+    add_telegram_user(telegram_id=user.id, telegram_username=user.username or "")
+
     text = (
         f"Привіт, <b>{user.first_name}</b>!\n\n"
         f"Твій ID: <code>{user.id}</code>\n"
         f"Username: @{user.username if user.username else '—'}\n\n"
         "Оберіть категорію для пошуку:"
     )
-    add_telegram_user(telegram_id=user.id, telegram_username=user.username or "")
     await message.answer(text, reply_markup=get_main_menu())
-
-    # Send reply keyboard (always visible)
     await message.answer("Меню доступне завжди 👇", reply_markup=get_persistent_menu())
 
 
-# --- Callback handler for menu selection ---
+# --- Real estate category handler ---
 @dp.callback_query(F.data == "category_real_estate")
 async def category_real_estate_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if callback.message is None or not isinstance(callback.message, types.Message):
+    if not callback.message:
         await callback.answer("Помилка: повідомлення недоступне.", show_alert=True)
         return
 
-    await callback.message.edit_text(
-        "✅ Ви обрали категорію: <b>Нерухомість</b>\n\nВведіть назву міста:",
-        reply_markup=None,
+    # Show "Buy house / Buy apartment" buttons
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Купити будинок", callback_data=f"category_detail:{REAL_ESTATE_BUY_HOUSE}:Купити будинок")
+    builder.button(
+        text="Купити квартиру", callback_data=f"category_detail:{REAL_ESTATE_BUY_APPARTMENT}:Купити квартиру"
     )
+    builder.adjust(1)
+
+    if callback.message and isinstance(callback.message, types.Message):
+        await callback.message.edit_text(
+            "✅ Ви обрали категорію: Нерухомість\nОберіть тип нерухомості:", reply_markup=builder.as_markup()
+        )
+    await state.set_state(SearchStates.waiting_for_category_detail)
+    await callback.answer()
+
+
+# --- Handler for real estate detail selection ---
+@dp.callback_query(F.data.startswith("category_detail:"))
+async def category_detail_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if not callback.data or not callback.message:
+        await callback.answer("Помилка")
+        return
+
+    parts = callback.data.split(":")
+    category_id = int(parts[1])
+    category_name = parts[2]
+
+    # Save category to state
+    await state.update_data(category_id=category_id, category_name=category_name)
+
+    if callback.message and isinstance(callback.message, types.Message):
+        await callback.message.edit_text(f"✅ Ви обрали: {category_name}\n\nВведіть назву міста:")
     await state.set_state(SearchStates.waiting_for_city)
     await callback.answer()
 
@@ -96,11 +125,10 @@ async def category_real_estate_handler(callback: types.CallbackQuery, state: FSM
 # --- Handler for city input ---
 @dp.message(SearchStates.waiting_for_city)
 async def process_city_input(message: types.Message, state: FSMContext) -> None:
-    if message.text is None:
+    if not message.text:
         await message.answer("⚠️ Не вдалося отримати текст повідомлення.")
         return
     city_name = message.text.strip()
-
     if len(city_name) < 3:
         await message.answer("⚠️ Введіть щонайменше 3 літери для пошуку міста.")
         return
@@ -116,11 +144,7 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
         await message.answer("❌ Місто не знайдено. Спробуйте ще раз.")
         return
 
-    city_data = data["data"]
-    # remove duplicates:
-    unique_cities = remove_duplicate_cities(city_data)
-
-    # Take first 5 options HARD CODED
+    unique_cities = remove_duplicate_cities(data["data"])
     options = unique_cities[:5]
 
     builder = InlineKeyboardBuilder()
@@ -128,44 +152,41 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
         city = item["city"]
         region = item["region"]["name"]
         region_id = item["region"]["id"]
-        button_text = f"{city['name']} ({region}, {region_id})"
         callback_data = f"choose_city:{city['id']}:{city['name']}:{region_id}"
-        builder.button(text=button_text, callback_data=callback_data)
+        builder.button(text=f"{city['name']} ({region})", callback_data=callback_data)
 
-    builder.adjust(1)  # 1 button per row
-
-    await message.answer(
-        "✅ Знайдено ось такі населені пункти. Оберіть ваш:",
-        reply_markup=builder.as_markup(),
-    )
-
-    await state.clear()
-
-    # Show found cities
-    cities = [f"🏙 {item['city']['name']} (ID: {item['city']['id']})" for item in unique_cities]
-    await message.answer("Знайдені міста:\n" + "\n".join(cities))
-
-    await state.clear()  # Clear state for next steps
+    builder.adjust(1)
+    await message.answer("✅ Знайдено ось такі населені пункти. Оберіть ваш:", reply_markup=builder.as_markup())
 
 
+# --- Handler for city selection ---
 @dp.callback_query(F.data.startswith("choose_city:"))
-async def choose_city_handler(callback: types.CallbackQuery) -> None:
-    if callback.data is None:
-        await callback.answer("⚠️ Не вдалося отримати дані callback.", show_alert=True)
+async def choose_city_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if not callback.data or not callback.message:
+        await callback.answer("Помилка")
         return
+
     parts = callback.data.split(":")
     city_id = parts[1]
     city_name = parts[2]
     region_id = parts[3]
 
+    # Get category from state
+    data = await state.get_data()
+    category_id = data.get("category_id")
+    category_name = data.get("category_name")
+
+    text = f"🏙 Ви обрали місто: <b>{city_name}</b> (ID: {city_id}), (REGION ID: {region_id})"
+    if category_id and category_name:
+        text += f"\n\n📌 Категорія - {category_name}, ID: {category_id}"
+
     if callback.message and isinstance(callback.message, types.Message):
-        await callback.message.edit_text(
-            f"🏙 Ви обрали місто: <b>{city_name}</b> (ID: {city_id}), (REGION ID: {region_id})"
-        )
+        await callback.message.edit_text(text)
     await callback.answer()
+    await state.clear()
 
 
-# --- Main entrypoint ---
+# --- Entrypoint ---
 async def main() -> None:
     await dp.start_polling(bot)
 
