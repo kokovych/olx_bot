@@ -26,7 +26,6 @@ API_TOKEN = os.getenv("API_TOKEN")
 if not API_TOKEN:
     raise ValueError("No API token provided. Please set the API_TOKEN environment variable.")
 
-
 # --- Initialize bot and dispatcher ---
 bot = Bot(
     token=API_TOKEN,
@@ -39,11 +38,17 @@ dp = Dispatcher()
 class SearchStates(StatesGroup):
     waiting_for_category_detail = State()
     waiting_for_city = State()
+    waiting_for_currency = State()
 
 
 # --- Category IDs ---
-REAL_ESTATE_BUY_HOUSE = 1758
-REAL_ESTATE_BUY_APPARTMENT = 1602
+REAL_ESTATE_BUY_HOUSE = 1602
+REAL_ESTATE_BUY_APPARTMENT = 1758
+
+# Currency:
+CURRENCY_UAH = "UAH"
+CURRENCY_USD = "USD"
+CURRENCY_EUR = "EUR"
 
 
 # --- Persistent menu (bottom keyboard) ---
@@ -88,15 +93,20 @@ async def category_real_estate_handler(callback: types.CallbackQuery, state: FSM
 
     # Show "Buy house / Buy apartment" buttons
     builder = InlineKeyboardBuilder()
-    builder.button(text="Купити будинок", callback_data=f"category_detail:{REAL_ESTATE_BUY_HOUSE}:Купити будинок")
     builder.button(
-        text="Купити квартиру", callback_data=f"category_detail:{REAL_ESTATE_BUY_APPARTMENT}:Купити квартиру"
+        text="Купити будинок",
+        callback_data=f"category_detail:{REAL_ESTATE_BUY_HOUSE}:Купити будинок",
+    )
+    builder.button(
+        text="Купити квартиру",
+        callback_data=f"category_detail:{REAL_ESTATE_BUY_APPARTMENT}:Купити квартиру",
     )
     builder.adjust(1)
 
-    if callback.message and isinstance(callback.message, types.Message):
+    if isinstance(callback.message, types.Message):
         await callback.message.edit_text(
-            "✅ Ви обрали категорію: Нерухомість\nОберіть тип нерухомості:", reply_markup=builder.as_markup()
+            "✅ Ви обрали категорію: Нерухомість\nОберіть тип нерухомості:",
+            reply_markup=builder.as_markup(),
         )
     await state.set_state(SearchStates.waiting_for_category_detail)
     await callback.answer()
@@ -116,7 +126,7 @@ async def category_detail_handler(callback: types.CallbackQuery, state: FSMConte
     # Save category to state
     await state.update_data(category_id=category_id, category_name=category_name)
 
-    if callback.message and isinstance(callback.message, types.Message):
+    if isinstance(callback.message, types.Message):
         await callback.message.edit_text(f"✅ Ви обрали: {category_name}\n\nВведіть назву міста:")
     await state.set_state(SearchStates.waiting_for_city)
     await callback.answer()
@@ -156,7 +166,10 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
         builder.button(text=f"{city['name']} ({region})", callback_data=callback_data)
 
     builder.adjust(1)
-    await message.answer("✅ Знайдено ось такі населені пункти. Оберіть ваш:", reply_markup=builder.as_markup())
+    await message.answer(
+        "✅ Знайдено ось такі населені пункти. Оберіть ваш:",
+        reply_markup=builder.as_markup(),
+    )
 
 
 # --- Handler for city selection ---
@@ -167,21 +180,59 @@ async def choose_city_handler(callback: types.CallbackQuery, state: FSMContext) 
         return
 
     parts = callback.data.split(":")
+    if len(parts) < 4:
+        await callback.answer("Невірні дані", show_alert=True)
+        return
+
     city_id = parts[1]
     city_name = parts[2]
     region_id = parts[3]
 
-    # Get category from state
+    # Save to state
+    await state.update_data(city_id=city_id, city_name=city_name, region_id=region_id)
+
+    # Show currency menu
+    builder = InlineKeyboardBuilder()
+    builder.button(text="USD - Долар США", callback_data=f"currency:{CURRENCY_USD}")
+    builder.button(text="UAH - Гривня", callback_data=f"currency:{CURRENCY_UAH}")
+    builder.button(text="EUR - Євро", callback_data=f"currency:{CURRENCY_EUR}")
+    builder.adjust(1)
+
+    if isinstance(callback.message, types.Message):
+        await callback.message.edit_text(
+            f"🏙 Ви обрали місто: <b>{city_name}</b>\n\nТепер оберіть валюту:",
+            reply_markup=builder.as_markup(),
+        )
+    await state.set_state(SearchStates.waiting_for_currency)
+    await callback.answer()
+
+
+# --- Currency handler ---
+@dp.callback_query(F.data.startswith("currency:"))
+async def currency_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if not callback.data or not callback.message:
+        await callback.answer("Помилка")
+        return
+
+    currency = callback.data.split(":", 1)[1]
+    await state.update_data(currency=currency)
+
+    # Get all data from state
     data = await state.get_data()
+    city_id = data.get("city_id")
+    city_name = data.get("city_name")
+    region_id = data.get("region_id")
     category_id = data.get("category_id")
     category_name = data.get("category_name")
 
-    text = f"🏙 Ви обрали місто: <b>{city_name}</b> (ID: {city_id}), (REGION ID: {region_id})"
+    text = f"🏙 Місто: <b>{city_name}</b> (ID: {city_id}, REG ID: {region_id})\n"
     if category_id and category_name:
-        text += f"\n\n📌 Категорія - {category_name}, ID: {category_id}"
+        text += f"📌 Категорія: {category_name} (ID: {category_id})\n"
+    text += f"💵 Валюта: {currency}"
 
-    if callback.message and isinstance(callback.message, types.Message):
+    if isinstance(callback.message, types.Message):
         await callback.message.edit_text(text)
+
     await callback.answer()
     await state.clear()
 
