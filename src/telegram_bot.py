@@ -39,25 +39,47 @@ class SearchStates(StatesGroup):
     waiting_for_category_detail = State()
     waiting_for_city = State()
     waiting_for_currency = State()
+    waiting_for_price_from = State()
+    waiting_for_price_to = State()
 
 
 # --- Category IDs ---
 REAL_ESTATE_BUY_HOUSE = 1602
 REAL_ESTATE_BUY_APPARTMENT = 1758
 
-# Currency:
+# --- Currency options ---
 CURRENCY_UAH = "UAH"
 CURRENCY_USD = "USD"
 CURRENCY_EUR = "EUR"
 
+# --- Price options ---
+PRICE_FROM_OPTIONS = [
+    ("немає", ""),
+    ("10 000", "10000"),
+    ("20 000", "20000"),
+    ("30 000", "30000"),
+    ("50 000", "50000"),
+    ("100 000", "100000"),
+]
 
-# --- Persistent menu (bottom keyboard) ---
+PRICE_TO_OPTIONS = [
+    ("немає", ""),
+    ("30 000", "30000"),
+    ("50 000", "50000"),
+    ("60 000", "60000"),
+    ("70 000", "70000"),
+    ("100 000", "100000"),
+    ("1 000 000", "1000000"),
+]
+
+
+# --- Persistent menu ---
 def get_persistent_menu() -> ReplyKeyboardMarkup:
     keyboard = [[KeyboardButton(text="/start")]]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 
-# --- Inline main menu (categories) ---
+# --- Inline main menu ---
 def get_main_menu() -> InlineKeyboardMarkup:
     keyboard = [[InlineKeyboardButton(text="🏠 Нерухомість", callback_data="category_real_estate")]]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
@@ -91,15 +113,11 @@ async def category_real_estate_handler(callback: types.CallbackQuery, state: FSM
         await callback.answer("Помилка: повідомлення недоступне.", show_alert=True)
         return
 
-    # Show "Buy house / Buy apartment" buttons
+    # Show category buttons
     builder = InlineKeyboardBuilder()
+    builder.button(text="Купити будинок", callback_data=f"category_detail:{REAL_ESTATE_BUY_HOUSE}:Купити будинок")
     builder.button(
-        text="Купити будинок",
-        callback_data=f"category_detail:{REAL_ESTATE_BUY_HOUSE}:Купити будинок",
-    )
-    builder.button(
-        text="Купити квартиру",
-        callback_data=f"category_detail:{REAL_ESTATE_BUY_APPARTMENT}:Купити квартиру",
+        text="Купити квартиру", callback_data=f"category_detail:{REAL_ESTATE_BUY_APPARTMENT}:Купити квартиру"
     )
     builder.adjust(1)
 
@@ -112,13 +130,12 @@ async def category_real_estate_handler(callback: types.CallbackQuery, state: FSM
     await callback.answer()
 
 
-# --- Handler for real estate detail selection ---
+# --- Category detail handler ---
 @dp.callback_query(F.data.startswith("category_detail:"))
 async def category_detail_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not callback.data or not callback.message:
-        await callback.answer("Помилка")
+    if callback.data is None:
+        await callback.answer("⚠️ Не вдалося отримати дані callback.", show_alert=True)
         return
-
     parts = callback.data.split(":")
     category_id = int(parts[1])
     category_name = parts[2]
@@ -132,10 +149,10 @@ async def category_detail_handler(callback: types.CallbackQuery, state: FSMConte
     await callback.answer()
 
 
-# --- Handler for city input ---
+# --- City input handler ---
 @dp.message(SearchStates.waiting_for_city)
 async def process_city_input(message: types.Message, state: FSMContext) -> None:
-    if not message.text:
+    if message.text is None:
         await message.answer("⚠️ Не вдалося отримати текст повідомлення.")
         return
     city_name = message.text.strip()
@@ -143,15 +160,17 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
         await message.answer("⚠️ Введіть щонайменше 3 літери для пошуку міста.")
         return
 
-    await message.answer("⏳ Шукаю місто...")
+    # Send temporary "searching city" message
+    searching_msg = await message.answer("⏳ Шукаю місто...")
+
     try:
         data = await get_city_info(city_name)
     except Exception as e:
-        await message.answer(f"❌ Помилка при виклику API: {e}")
+        await searching_msg.edit_text(f"❌ Помилка при виклику API: {e}")
         return
 
     if not data.get("data"):
-        await message.answer("❌ Місто не знайдено. Спробуйте ще раз.")
+        await searching_msg.edit_text("❌ Місто не знайдено. Спробуйте ще раз.")
         return
 
     unique_cities = remove_duplicate_cities(data["data"])
@@ -162,47 +181,51 @@ async def process_city_input(message: types.Message, state: FSMContext) -> None:
         city = item["city"]
         region = item["region"]["name"]
         region_id = item["region"]["id"]
-        callback_data = f"choose_city:{city['id']}:{city['name']}:{region_id}"
-        builder.button(text=f"{city['name']} ({region})", callback_data=callback_data)
+        builder.button(
+            text=f"{city['name']} ({region})", callback_data=f"choose_city:{city['id']}:{city['name']}:{region_id}"
+        )
 
     builder.adjust(1)
-    await message.answer(
-        "✅ Знайдено ось такі населені пункти. Оберіть ваш:",
-        reply_markup=builder.as_markup(),
+    await searching_msg.edit_text(
+        "✅ Знайдено ось такі населені пункти. Оберіть ваш:", reply_markup=builder.as_markup()
     )
+    await state.set_state(SearchStates.waiting_for_currency)
+    await state.update_data(temp_msg_id=searching_msg.message_id)
+    await state.update_data(temp_chat_id=searching_msg.chat.id)
 
 
-# --- Handler for city selection ---
+# --- City selection handler ---
 @dp.callback_query(F.data.startswith("choose_city:"))
 async def choose_city_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not callback.data or not callback.message:
-        await callback.answer("Помилка")
+    if callback.data is None:
+        await callback.answer("⚠️ Не вдалося отримати дані callback.", show_alert=True)
         return
-
     parts = callback.data.split(":")
-    if len(parts) < 4:
-        await callback.answer("Невірні дані", show_alert=True)
-        return
-
     city_id = parts[1]
     city_name = parts[2]
     region_id = parts[3]
 
-    # Save to state
+    # Save city to state
     await state.update_data(city_id=city_id, city_name=city_name, region_id=region_id)
 
-    # Show currency menu
+    # Retrieve temporary message
+    data = await state.get_data()
+    msg_id = data.get("temp_msg_id")
+    chat_id = data.get("temp_chat_id")
+
+    # Show currency selection
     builder = InlineKeyboardBuilder()
     builder.button(text="USD - Долар США", callback_data=f"currency:{CURRENCY_USD}")
     builder.button(text="UAH - Гривня", callback_data=f"currency:{CURRENCY_UAH}")
     builder.button(text="EUR - Євро", callback_data=f"currency:{CURRENCY_EUR}")
     builder.adjust(1)
 
-    if isinstance(callback.message, types.Message):
-        await callback.message.edit_text(
-            f"🏙 Ви обрали місто: <b>{city_name}</b>\n\nТепер оберіть валюту:",
-            reply_markup=builder.as_markup(),
-        )
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=f"✨ Обрані параметри пошуку:\n\n🏙 Місто: <b>{city_name}</b>\n\nТепер оберіть валюту:",
+        reply_markup=builder.as_markup(),
+    )
     await state.set_state(SearchStates.waiting_for_currency)
     await callback.answer()
 
@@ -210,31 +233,100 @@ async def choose_city_handler(callback: types.CallbackQuery, state: FSMContext) 
 # --- Currency handler ---
 @dp.callback_query(F.data.startswith("currency:"))
 async def currency_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
-    if not callback.data or not callback.message:
-        await callback.answer("Помилка")
+    if callback.data is None:
+        await callback.answer("⚠️ Не вдалося отримати дані callback.", show_alert=True)
         return
-
     currency = callback.data.split(":", 1)[1]
     await state.update_data(currency=currency)
 
-    # Get all data from state
+    # Retrieve temporary message
+    data = await state.get_data()
+    msg_id = data.get("temp_msg_id")
+    chat_id = data.get("temp_chat_id")
+
+    # Show "price from" selection
+    builder = InlineKeyboardBuilder()
+    for label, value in PRICE_FROM_OPTIONS:
+        builder.button(text=label, callback_data=f"price_from:{value}")
+    builder.adjust(2)
+
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=f"✨ Обрані параметри пошуку:\n\n💵 Валюта: {currency}\n\nОберіть <b>Ціну від</b>:",
+        reply_markup=builder.as_markup(),
+    )
+    await state.set_state(SearchStates.waiting_for_price_from)
+    await callback.answer()
+
+
+# --- Price from handler ---
+@dp.callback_query(F.data.startswith("price_from:"))
+async def price_from_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if callback.data is None:
+        await callback.answer("⚠️ Не вдалося отримати дані callback.", show_alert=True)
+        return
+    price_from = callback.data.split(":", 1)[1]
+    await state.update_data(price_from=price_from)
+
+    # Retrieve temporary message
+    data = await state.get_data()
+    msg_id = data.get("temp_msg_id")
+    chat_id = data.get("temp_chat_id")
+
+    # Show "price to" selection
+    builder = InlineKeyboardBuilder()
+    for label, value in PRICE_TO_OPTIONS:
+        builder.button(text=label, callback_data=f"price_to:{value}")
+    builder.adjust(2)
+    price_from = price_from if price_from else "немає"
+    await bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=msg_id,
+        text=f"✨ Обрані параметри пошуку:\n\n📈 Ціна від: {price_from}\n\nОберіть <b>Ціну до</b>:",
+        reply_markup=builder.as_markup(),
+    )
+    await state.set_state(SearchStates.waiting_for_price_to)
+    await callback.answer()
+
+
+# --- Price to handler ---
+@dp.callback_query(F.data.startswith("price_to:"))
+async def price_to_handler(callback: types.CallbackQuery, state: FSMContext) -> None:
+    if callback.data is None:
+        await callback.answer("⚠️ Не вдалося отримати дані callback.", show_alert=True)
+        return
+    price_to = callback.data.split(":", 1)[1]
+    await state.update_data(price_to=price_to)
+
+    # Retrieve all data
     data = await state.get_data()
     city_id = data.get("city_id")
-    city_name = data.get("city_name")
+    city_name_raw = data.get("city_name")
+    city_name: str = city_name_raw if isinstance(city_name_raw, str) and city_name_raw is not None else ""
     region_id = data.get("region_id")
     category_id = data.get("category_id")
     category_name = data.get("category_name")
+    currency = data.get("currency")
+    price_from = data.get("price_from")
+    price_to_val = data.get("price_to")
+    price_to_str: str = price_to_val if isinstance(price_to_val, str) and price_to_val is not None else ""
+    msg_id = data.get("temp_msg_id")
+    chat_id = data.get("temp_chat_id")
 
-    text = f"🏙 Місто: <b>{city_name}</b> (ID: {city_id}, REG ID: {region_id})\n"
-    if category_id and category_name:
-        text += f"📌 Категорія: {category_name} (ID: {category_id})\n"
-    text += f"💵 Валюта: {currency}"
+    # Show final selected parameters
+    text = (
+        f"✨ Обрані параметри пошуку:\n\n"
+        f"🏙 Місто: <b>{city_name}</b> (ID: {city_id}, REG ID: {region_id})\n"
+        f"📌 Категорія: {category_name} (ID: {category_id})\n"
+        f"💵 Валюта: {currency}\n"
+        f"📈 Ціна від: {price_from if price_from else 'немає'}\n"
+        f"📉 Ціна до: {price_to_str if price_to_str else 'немає'}"
+    )
 
-    if isinstance(callback.message, types.Message):
-        await callback.message.edit_text(text)
-
-    await callback.answer()
+    await bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text)
     await state.clear()
+    await callback.answer()
 
 
 # --- Entrypoint ---
