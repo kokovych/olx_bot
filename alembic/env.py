@@ -5,6 +5,9 @@ from sqlmodel import SQLModel
 
 from alembic import context
 
+# Import all models so SQLModel.metadata is populated
+from src.models import SearchFilter, TelegramUser, UserSearchFilters  # noqa: F401
+
 config = context.config
 fileConfig(config.config_file_name)
 
