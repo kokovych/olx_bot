@@ -1,5 +1,4 @@
 import asyncio
-import os
 
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.client.default import DefaultBotProperties
@@ -14,19 +13,24 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from dotenv import load_dotenv
 
+from constants import (
+    API_TOKEN,
+    CURRENCY_EUR,
+    CURRENCY_UAH,
+    CURRENCY_USD,
+    PRICE_FROM_OPTIONS,
+    PRICE_TO_OPTIONS,
+    REAL_ESTATE_BUY_APPARTMENT,
+    REAL_ESTATE_BUY_HOUSE,
+)
 from db import add_telegram_user
 from olx_api import get_city_info
 from utils import remove_duplicate_cities
 
-# --- Load environment variables ---
-load_dotenv()
-API_TOKEN = os.getenv("API_TOKEN")
+# --- Initialize bot and dispatcher ---
 if not API_TOKEN:
     raise ValueError("No API token provided. Please set the API_TOKEN environment variable.")
-
-# --- Initialize bot and dispatcher ---
 bot = Bot(
     token=API_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML),
@@ -41,36 +45,6 @@ class SearchStates(StatesGroup):
     waiting_for_currency = State()
     waiting_for_price_from = State()
     waiting_for_price_to = State()
-
-
-# --- Category IDs ---
-REAL_ESTATE_BUY_HOUSE = 1602
-REAL_ESTATE_BUY_APPARTMENT = 1758
-
-# --- Currency options ---
-CURRENCY_UAH = "UAH"
-CURRENCY_USD = "USD"
-CURRENCY_EUR = "EUR"
-
-# --- Price options ---
-PRICE_FROM_OPTIONS = [
-    ("немає", ""),
-    ("10 000", "10000"),
-    ("20 000", "20000"),
-    ("30 000", "30000"),
-    ("50 000", "50000"),
-    ("100 000", "100000"),
-]
-
-PRICE_TO_OPTIONS = [
-    ("немає", ""),
-    ("30 000", "30000"),
-    ("50 000", "50000"),
-    ("60 000", "60000"),
-    ("70 000", "70000"),
-    ("100 000", "100000"),
-    ("1 000 000", "1000000"),
-]
 
 
 # --- Persistent menu ---
